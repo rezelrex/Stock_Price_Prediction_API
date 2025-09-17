@@ -1,0 +1,179 @@
+# -------------------------------------------------------------------------
+# Step 1: Install Dependencies
+# -------------------------------------------------------------------------
+# Before running this script, you need to install the necessary libraries.
+# Open your terminal or command prompt and run the following commands:
+# pip install torch
+# pip install pandas
+# pip install numpy
+# pip install matplotlib
+# pip install yfinance
+# -------------------------------------------------------------------------
+
+import torch
+import torch.nn as nn
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+
+# Check if a GPU is available, otherwise use CPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {device}')
+
+# -------------------------------------------------------------------------
+# Step 2: Download Financial Data
+# -------------------------------------------------------------------------
+# We'll use the yfinance library to download historical stock data.
+# This example uses Apple Inc. (AAPL) stock data.
+# You can change the ticker symbol to any other stock.
+
+ticker = 'AAPL'
+data = yf.download(ticker, start='2020-01-01', end='2024-01-01')
+
+# We'll focus on the 'Close' price for our time-series prediction.
+close_prices = data['Close'].values.reshape(-1, 1)
+
+print(f'\nDownloaded {len(close_prices)} data points for {ticker}.')
+
+# -------------------------------------------------------------------------
+# Step 3: Preprocess the Data
+# -------------------------------------------------------------------------
+# Deep learning models work best with normalized data. We'll scale the
+# data to a range between 0 and 1.
+
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(close_prices)
+
+# -------------------------------------------------------------------------
+# Step 4: Create Training and Testing Datasets
+# -------------------------------------------------------------------------
+# For time-series, the model learns from a sequence of past data points
+# to predict the next one. We'll create sequences of a defined length.
+
+def create_sequences(data, sequence_length):
+    sequences = []
+    labels = []
+    for i in range(len(data) - sequence_length):
+        sequences.append(data[i:i + sequence_length])
+        labels.append(data[i + sequence_length])
+    return np.array(sequences), np.array(labels)
+
+sequence_length = 60  # The number of past days to look at for each prediction
+sequences, labels = create_sequences(scaled_data, sequence_length)
+
+# Split data into training and testing sets
+train_split = int(0.8 * len(sequences))
+train_sequences = sequences[:train_split]
+train_labels = labels[:train_split]
+test_sequences = sequences[train_split:]
+test_labels = labels[train_split:]
+
+# Convert numpy arrays to PyTorch tensors
+train_sequences = torch.from_numpy(train_sequences).float().to(device)
+train_labels = torch.from_numpy(train_labels).float().to(device)
+test_sequences = torch.from_numpy(test_sequences).float().to(device)
+test_labels = torch.from_numpy(test_labels).float().to(device)
+
+print(f'\nTraining set size: {len(train_sequences)}')
+print(f'Testing set size: {len(test_sequences)}')
+
+# -------------------------------------------------------------------------
+# Step 5: Define the LSTM Model (Your next step!)
+# -------------------------------------------------------------------------
+# An LSTM is a type of recurrent neural network designed to remember
+# patterns over time. 
+# You will define a simple LSTM model to process the sequences.
+
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size):
+        super(LSTM, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])  # Take the output from the last time step
+        return out
+
+# -------------------------------------------------------------------------
+# Step 6: Initialize the Model, Loss Function, and Optimizer
+# -------------------------------------------------------------------------
+torch.manual_seed(42)  # For reproducibility
+
+input_size = 1
+hidden_size = 50
+num_layers = 2
+output_size = 1
+learning_rate = 0.001
+num_epochs = 100
+
+model = LSTM(input_size, hidden_size, num_layers, output_size).to(device)
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+# -------------------------------------------------------------------------
+# Step 7: The Training Loop
+# -------------------------------------------------------------------------
+# This is where the model learns by iterating over the training data
+# multiple times (epochs).
+
+for epoch in range(num_epochs):
+    model.train()  # Set the model to training mode
+    outputs = model(train_sequences)
+    loss = criterion(outputs, train_labels)
+
+    # Backpropagation and optimization
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    if (epoch+1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
+
+# -------------------------------------------------------------------------
+# Step 8: Making Predictions and Plotting (Your next step!)
+# -------------------------------------------------------------------------
+# Now we'll use our trained model to make predictions on the test set
+# and visualize the results.
+
+model.eval() # Set the model to evaluation mode
+with torch.no_grad(): # Disable gradient calculations
+    train_predict = model(train_sequences).cpu().numpy()
+    test_predict = model(test_sequences).cpu().numpy()
+
+# Inverse transform the predictions and labels to get original prices
+train_predict = scaler.inverse_transform(train_predict)
+train_labels = scaler.inverse_transform(train_labels.cpu().numpy())
+test_predict = scaler.inverse_transform(test_predict)
+test_labels = scaler.inverse_transform(test_labels.cpu().numpy())
+
+# Create a final array for plotting
+train_plot = np.empty_like(close_prices)
+train_plot[:, :] = np.nan
+train_plot[sequence_length:len(train_predict) + sequence_length, :] = train_predict
+
+test_plot = np.empty_like(close_prices)
+test_plot[:, :] = np.nan
+test_plot[len(train_predict) + sequence_length:len(close_prices), :] = test_predict
+
+# Plotting the results
+plt.figure(figsize=(15, 7))
+plt.title(f'{ticker} Stock Price Prediction with LSTM')
+plt.xlabel('Date')
+plt.ylabel('Price (USD)')
+plt.plot(data.index, close_prices, label='Original Data')
+plt.plot(data.index, train_plot, label='Training Predictions', color='blue')
+plt.plot(data.index, test_plot, label='Testing Predictions', color='red')
+plt.legend()
+plt.grid(True)
+plt.savefig("prediction_plot.png")
+plt.show()
+
+print("\nPrediction plot generated successfully!")
+# 
